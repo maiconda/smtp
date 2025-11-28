@@ -1,59 +1,92 @@
-from socket import *            # Para criar conexão TCP/IP direta
-import ssl              # Para "upgrade" do socket para TLS (segurança/encriptação)
-import base64           # Para codificar dados binários (imagem) em texto para SMTP
-from dotenv import load_dotenv # Para ler variáveis do arquivo .env
-import os               # Para acessar variáveis de ambiente
+from socket import *
+import ssl
+import base64
+from dotenv import load_dotenv
+import os
 
-load_dotenv()           # Carrega variáveis do .env para os.environ (sem expor senhas no código)
+# Carrega variáveis
+load_dotenv()
 
-smtp_server = 'smtp.gmail.com' # Endereço do servidor SMTP do Gmail
-smtp_port = 587               # Porta 587 indicada para STARTTLS (negociação segura)
+smtp_server = 'smtp.gmail.com'
+smtp_port = 587
 
-sender = os.getenv('SENDER')      # E-mail remetente (do arquivo .env)
-password = os.getenv('PASSWORD')  # Senha de app do Gmail (do arquivo .env)
-receiver = os.getenv('RECEIVER')  # E-mail destinatário (do arquivo .env)
+sender = os.getenv('SENDER')
+password = os.getenv('PASSWORD')
+receiver = os.getenv('RECEIVER')
 
-image_path = 'imagem.jpg'         # Caminho do arquivo de imagem a anexar
+image_path = 'imagem.png'
 
-# 1. Criando o socket TCP/IP básico e conectando ao servidor SMTP
+# cria socket e conecta (threeway-handshake, syn, syn-ack, ack)
 sock = socket(AF_INET, SOCK_STREAM)
-sock.connect((smtp_server, smtp_port)) # Abre conexão TCP com o Gmail
-sock.recv(2048)                       # Lê mensagem de saudação '220...' do servidor
+sock.connect((smtp_server, smtp_port))
 
-# 2. Iniciando conversa SMTP (EHLO) e negociando segurança (STARTTLS)
-sock.sendall(b'EHLO estudante\r\n')  # EHLO diz quem é o cliente e obtém capacidades do servidor
-sock.recv(2048)                       # Recebe resposta (normalmente código 250)
-sock.sendall(b'STARTTLS\r\n')        # Solicita "upgrade" de conexão para TLS (requisito do Gmail)
-sock.recv(2048)                       # Resposta '220 2.0.0 Ready to start TLS' sinaliza pronto para segurar
+# https://serversmtp.com/smtp-error/
 
-# 3. "Upgrade" do socket: tornando seguro (TLS/SSL), obrigatório para Gmail
+# Recebe saudação inicial (220)
+resposta = sock.recv(2048)
+print(resposta.decode())
+
+# primeiro ehlo
+sock.sendall(b'EHLO estudante\r\n')
+resposta = sock.recv(2048)
+print(resposta.decode())
+
+# solicita STARTTLS
+sock.sendall(b'STARTTLS\r\n')
+resposta = sock.recv(2048)
+print(resposta.decode())
+
+# carrega as configuracoes de seguranca padrao do so
 context = ssl.create_default_context()
-ssock = context.wrap_socket(sock, server_hostname=smtp_server) # Envolve socket, mantendo autenticação de nome do servidor
 
-# 4. Precisa reiniciar handshake EHLO depois do upgrade para TLS!
-ssock.sendall(b'EHLO estudante\r\n') # Gmail exige nova identificação já sob conexão criptografada
-ssock.recv(2048)
+# cria um novo socket seguro
+# server_hostname verifica se o certificado digital que o servidor entregou realmente pertence a smtp.gmail.com
+ssock = context.wrap_socket(sock, server_hostname=smtp_server)
 
-# 5. Autenticação SMTP: AUTH LOGIN (usuário e senha em base64)
-ssock.sendall(b'AUTH LOGIN\r\n')                 # Inicia autenticação por login/senha
-ssock.recv(2048)                                  # Resposta do servidor pedindo usuário (em base64)
-ssock.sendall(base64.b64encode(sender.encode()) + b'\r\n')    # Envia usuário codificado
-ssock.recv(2048)                                  # Resposta do servidor pedindo senha (em base64)
-ssock.sendall(base64.b64encode(password.encode()) + b'\r\n')  # Envia senha codificada
-ssock.recv(2048)                                  # "235 Authenticated" indica sucesso
+# segundo ehlo, afinal, a comunicacao "resetou"
+ssock.sendall(b'EHLO estudante\r\n')
+resposta = ssock.recv(2048)
+print(resposta.decode())
 
-# 6. Comandos SMTP de envelope: remetente e destinatário
-ssock.sendall(f'MAIL FROM:<{sender}>\r\n'.encode())  # Inicia envelope do remetente
-ssock.recv(2048)
-ssock.sendall(f'RCPT TO:<{receiver}>\r\n'.encode())  # Inicia envelope do destinatário
-ssock.recv(2048)
-ssock.sendall(b'DATA\r\n')                           # Comando para enviar dados do e‑mail
-ssock.recv(2048) # Resposta 354: pronto para receber conteúdo do e‑mail
+# solicitamos a autenticacao
+ssock.sendall(b'AUTH LOGIN\r\n')
+resposta = ssock.recv(2048)
+print(resposta.decode())
 
-# 7. Montando corpo MIME multipart manualmente (texto + imagem base64)
-boundary = 'MIMEBOUNDARY12345'                       # Fronteira para separar partes do multipart
-subject = "Teste SMTP manual com imagem"
+# envia usuario
+# o b indica que é uma string de bytes, \r\n equivalente ao enter
+ssock.sendall(base64.b64encode(sender.encode()) + b'\r\n')
+resposta = ssock.recv(2048)
+print(resposta.decode())
 
+# envia a senha
+ssock.sendall(base64.b64encode(password.encode()) + b'\r\n')
+resposta = ssock.recv(2048)
+print(resposta.decode())
+
+# servidor ira aceitar
+
+# envelope (MAIL FROM / RCPT TO)
+ssock.sendall(f'MAIL FROM:<{sender}>\r\n'.encode())
+resposta = ssock.recv(2048)
+print(resposta.decode())
+
+ssock.sendall(f'RCPT TO:<{receiver}>\r\n'.encode())
+resposta = ssock.recv(2048)
+print(resposta.decode())
+
+# comanda DATA avisa que acabou o envelope, tudo que enviar a partir de agora é conteúdo (cabeçalho, corpo, anexo)
+ssock.sendall(b'DATA\r\n')
+resposta = ssock.recv(2048)
+print(resposta.decode())
+
+# MIME (Multipurpose Internet Mail Extensions)
+# boundary é como um muro que separa texto de anexo
+# multipart/mixed avisa que o conteudo não é um texto so, e sim conteudo do tipo "mixed"
+boundary = 'BOUNDARYPADRAO'
+subject = "teste smtp"
+
+# cabecalho
 corpo = (
     f'Subject: {subject}\r\n'
     f'From: {sender}\r\n'
@@ -61,28 +94,44 @@ corpo = (
     'MIME-Version: 1.0\r\n'
     f'Content-Type: multipart/mixed; boundary={boundary}\r\n\r\n'
 )
-corpo += (
-    f'--{boundary}\r\n'
-    'Content-Type: text/plain; charset="utf-8"\r\n\r\n'
-    'Este e-mail tem uma imagem anexa.\r\n\r\n'
-)
-with open(image_path, 'rb') as f:    # Abre a imagem como bytes
-    img_b64 = base64.b64encode(f.read()).decode() # Converte binário em base64
-    # Quebra texto base64 em linhas de até 76 caracteres (recomendado por MIME)
-    linhas_b64 = '\r\n'.join([img_b64[i:i+76] for i in range(0, len(img_b64), 76)])
-corpo += (
-    f'--{boundary}\r\n'
-    'Content-Type: image/jpeg; name="imagem.jpg"\r\n'
-    'Content-Transfer-Encoding: base64\r\n'
-    'Content-Disposition: attachment; filename="imagem.jpg"\r\n\r\n'
-    f'{linhas_b64}\r\n'
-    f'--{boundary}--\r\n'                            # Finaliza o multipart
-)
-corpo += '\r\n.\r\n'  # Encerramento do SMTP: ponto em linha separada
-ssock.sendall(corpo.encode())
-ssock.recv(2048)  # Resposta do servidor sobre aceitação da mensagem
 
-# 8. Quit: finaliza a sessão SMTP
+# conteudo, primeiro texto
+corpo += (
+    f'--{boundary}\r\n'
+    'Content-Type: text/plain; charset="utf-8"\r\n'
+    'olá\r\n\r\n'
+)
+
+# tratamento da imagem
+try:
+    # le a imagem em binario e transforma em base64
+    with open(image_path, 'rb') as f:
+        img_b64 = base64.b64encode(f.read()).decode()
+        # fatia em linhas de 76 caracteres
+        linhas_b64 = '\r\n'.join([img_b64[i:i + 76] for i in range(0, len(img_b64), 76)])
+
+    corpo += (
+        f'--{boundary}\r\n'
+        'Content-Type: image/png; name="imagem.png"\r\n'
+        'Content-Transfer-Encoding: base64\r\n'
+        'Content-Disposition: attachment; filename="imagem.png"\r\n\r\n'
+        f'{linhas_b64}\r\n'
+        f'--{boundary}--\r\n'
+    )
+except FileNotFoundError:
+    print("nao achou")
+    exit()
+
+# finaliza com ponto final
+corpo += '\r\n.\r\n'
+
+ssock.sendall(corpo.encode())
+resposta = ssock.recv(2048)
+print(resposta.decode())
+
+# se despede de forma educada
 ssock.sendall(b'QUIT\r\n')
-ssock.recv(2048)
-ssock.close()   # Fecha socket seguro
+resposta = ssock.recv(2048)
+print(resposta.decode())
+
+ssock.close()
